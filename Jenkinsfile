@@ -1,9 +1,9 @@
+
 pipeline {
 
     agent any
 
     parameters {
-
         string(
             name: 'IMAGE_TAG',
             defaultValue: '2.0',
@@ -12,25 +12,29 @@ pipeline {
 
         choice(
             name: 'ACTION',
-            choices: ['BUILD_AND_DEPLOY', 'BUILD_ONLY', 'DEPLOY_ONLY'],
+            choices: [
+                'BUILD_AND_DEPLOY',
+                'BUILD_ONLY',
+                'DEPLOY_ONLY'
+            ],
             description: 'Pipeline action'
         )
     }
 
     environment {
-
         AWS_REGION = 'us-east-1'
-
         AWS_ACCOUNT_ID = '658606186375'
 
         EC2_HOST = '172.31.5.188'
 
         ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+        REMOTE_DIR = '/home/ubuntu/microservices/docker/nginx'
     }
 
     stages {
 
-        // ================= CHECKOUT =================
+        // CHECKOUT
 
         stage('Checkout') {
             steps {
@@ -40,23 +44,39 @@ pipeline {
             }
         }
 
-        // ================= VALIDATE =================
+        // VALIDATE
 
         stage('Validate') {
             steps {
                 sh '''
+                    set -e
+
+                    echo "Validating Docker and Node..."
+
                     node --version
                     npm --version
+                    docker --version
+                    docker compose version
+
+                    if [ ! -f docker-compose.yml ]; then
+                        echo "ERROR: docker-compose.yml not found"
+                        exit 1
+                    fi
+
                     npm ci --omit=dev
+
+                    ECR_REGISTRY="$ECR_REGISTRY" \
+                    IMAGE_TAG="$IMAGE_TAG" \
                     docker compose config --quiet
+
+                    echo "Validation completed."
                 '''
             }
         }
 
-        // ================= BUILD IMAGES =================
+        // BUILD DOCKER IMAGES
 
         stage('Build Images') {
-
             when {
                 expression {
                     params.ACTION == 'BUILD_AND_DEPLOY' ||
@@ -76,19 +96,20 @@ pipeline {
                     services.each { service ->
 
                         sh """
+                            set -e
+
                             docker build \
-                            -f ${service.file} \
-                            -t ${ECR_REGISTRY}/${service.name}:${params.IMAGE_TAG} .
+                                -f ${service.file} \
+                                -t ${ECR_REGISTRY}/${service.name}:${params.IMAGE_TAG} .
                         """
                     }
                 }
             }
         }
 
-        // ================= ECR LOGIN =================
+        // ECR LOGIN
 
         stage('ECR Login') {
-
             when {
                 expression {
                     params.ACTION == 'BUILD_AND_DEPLOY' ||
@@ -97,27 +118,27 @@ pipeline {
             }
 
             steps {
-
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws-jenkins'
                 ]]) {
 
                     sh '''
+                        set -e
+
                         aws ecr get-login-password \
-                        --region $AWS_REGION \
+                            --region "$AWS_REGION" \
                         | docker login \
-                        --username AWS \
-                        --password-stdin $ECR_REGISTRY
+                            --username AWS \
+                            --password-stdin "$ECR_REGISTRY"
                     '''
                 }
             }
         }
 
-        // ================= PUSH IMAGES =================
+        // PUSH IMAGES TO ECR
 
         stage('Push Images') {
-
             when {
                 expression {
                     params.ACTION == 'BUILD_AND_DEPLOY' ||
@@ -127,47 +148,97 @@ pipeline {
 
             steps {
                 sh '''
-                    docker push $ECR_REGISTRY/user-service:$IMAGE_TAG
-                    docker push $ECR_REGISTRY/product-service:$IMAGE_TAG
-                    docker push $ECR_REGISTRY/order-service:$IMAGE_TAG
+                    set -e
+
+                    docker push "$ECR_REGISTRY/user-service:$IMAGE_TAG"
+
+                    docker push "$ECR_REGISTRY/product-service:$IMAGE_TAG"
+
+                    docker push "$ECR_REGISTRY/order-service:$IMAGE_TAG"
+
+                    echo "All Docker images pushed to ECR."
                 '''
             }
         }
 
-        // ================= DEPLOY TO EC2 =================
+        // DEPLOY TO EC2
 
-        
-stage('Deploy to EC2') {
-    steps {
-        withCredentials([
-            sshUserPrivateKey(
-                credentialsId: 'ec2-ssh-key',
-                keyFileVariable: 'SSH_KEY',
-                usernameVariable: 'SSH_USER'
-            )
-        ]) {
-            sh '''
-                set -e
+        stage('Deploy to EC2') {
+            when {
+                expression {
+                    params.ACTION == 'BUILD_AND_DEPLOY' ||
+                    params.ACTION == 'DEPLOY_ONLY'
+                }
+            }
 
-                echo "Connecting to EC2 instance..."
+            steps {
 
-                chmod 600 "$SSH_KEY"
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
 
-                ssh -i "$SSH_KEY" \
-                    -o StrictHostKeyChecking=no \
-                    -o UserKnownHostsFile=/dev/null \
-                    -o ConnectTimeout=15 \
-                    -o BatchMode=yes \
-                    "$SSH_USER@172.31.5.188" \
-                    "mkdir -p ~/microservices/docker/nginx"
+                    sh '''
+                        set -e
 
-                echo "Deployment directory created successfully!"
-            '''
+                        echo "Preparing EC2 deployment..."
+
+                        chmod 600 "$SSH_KEY"
+
+                        SSH_OPTIONS="-i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15"
+
+                        echo "Creating deployment directory..."
+
+                        ssh $SSH_OPTIONS "$SSH_USER@$EC2_HOST" \
+                            "mkdir -p $REMOTE_DIR"
+
+                        echo "Copying Docker Compose file..."
+
+                        scp $SSH_OPTIONS \
+                            docker-compose.yml \
+                            "$SSH_USER@$EC2_HOST:$REMOTE_DIR/docker-compose.yml"
+
+                        echo "Deploying containers on EC2..."
+
+                        ssh $SSH_OPTIONS "$SSH_USER@$EC2_HOST" \
+                            "AWS_REGION='$AWS_REGION' ECR_REGISTRY='$ECR_REGISTRY' IMAGE_TAG='$IMAGE_TAG' REMOTE_DIR='$REMOTE_DIR' bash -s" <<'REMOTE'
+
+                        set -e
+
+                        cd "$REMOTE_DIR"
+
+                        echo "Logging into AWS ECR..."
+
+                        aws ecr get-login-password \
+                            --region "$AWS_REGION" \
+                        | docker login \
+                            --username AWS \
+                            --password-stdin "$ECR_REGISTRY"
+
+                        echo "Pulling latest images..."
+
+                        docker compose pull
+
+                        echo "Starting microservices..."
+
+                        docker compose up -d --remove-orphans
+
+                        echo "Checking running containers..."
+
+                        docker compose ps
+
+                        echo "EC2 deployment completed successfully."
+
+                        REMOTE
+                    '''
+                }
+            }
         }
-    }
-}
 
-        // ================= DEPLOYMENT VERIFICATION =================
+        // DEPLOYMENT VERIFICATION
 
         stage('Deployment Verification') {
 
@@ -183,33 +254,33 @@ stage('Deploy to EC2') {
                 sh '''
                     set -e
 
-                    echo "Waiting for containers to initialize..."
+                    echo "Waiting for microservices..."
 
                     sleep 15
 
                     echo "Checking User Service..."
 
                     curl --fail --silent --show-error \
-                         --retry 5 \
-                         --retry-delay 5 \
-                         --retry-connrefused \
-                         http://$EC2_HOST:8081/users
+                        --retry 5 \
+                        --retry-delay 5 \
+                        --retry-connrefused \
+                        "http://$EC2_HOST:8081/users"
 
                     echo "Checking Product Service..."
 
                     curl --fail --silent --show-error \
-                         --retry 5 \
-                         --retry-delay 5 \
-                         --retry-connrefused \
-                         http://$EC2_HOST:8081/products
+                        --retry 5 \
+                        --retry-delay 5 \
+                        --retry-connrefused \
+                        "http://$EC2_HOST:8081/products"
 
                     echo "Checking Order Service..."
 
                     curl --fail --silent --show-error \
-                         --retry 5 \
-                         --retry-delay 5 \
-                         --retry-connrefused \
-                         http://$EC2_HOST:8081/orders
+                        --retry 5 \
+                        --retry-delay 5 \
+                        --retry-connrefused \
+                        "http://$EC2_HOST:8081/orders"
 
                     echo "All microservices are responding successfully!"
                 '''
@@ -217,7 +288,7 @@ stage('Deploy to EC2') {
         }
     }
 
-    // ================= POST ACTIONS =================
+    // POST ACTIONS
 
     post {
 
