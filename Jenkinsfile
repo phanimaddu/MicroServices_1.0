@@ -136,102 +136,36 @@ pipeline {
 
         // ================= DEPLOY TO EC2 =================
 
-        stage('Deploy to EC2') {
+        
+stage('Deploy to EC2') {
+    steps {
+        withCredentials([
+            sshUserPrivateKey(
+                credentialsId: 'ec2-ssh-key',
+                keyFileVariable: 'SSH_KEY',
+                usernameVariable: 'SSH_USER'
+            )
+        ]) {
+            sh '''
+                set -e
 
-            when {
-                expression {
-                    params.ACTION == 'BUILD_AND_DEPLOY' ||
-                    params.ACTION == 'DEPLOY_ONLY'
-                }
-            }
+                echo "Connecting to EC2 instance..."
 
-            steps {
+                chmod 600 "$SSH_KEY"
 
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'ec2-deploy-key',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
+                ssh -i "$SSH_KEY" \
+                    -o StrictHostKeyChecking=no \
+                    -o UserKnownHostsFile=/dev/null \
+                    -o ConnectTimeout=15 \
+                    -o BatchMode=yes \
+                    "$SSH_USER@172.31.5.188" \
+                    "mkdir -p ~/microservices/docker/nginx"
 
-                    sh '''
-                        set -e
-
-                        echo "Creating deployment directories..."
-
-                        ssh -i "$SSH_KEY" \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_HOST" \
-                            "mkdir -p ~/microservices/docker/nginx"
-
-                        echo "Copying Docker Compose file..."
-
-                        scp -i "$SSH_KEY" \
-                            -o StrictHostKeyChecking=no \
-                            docker-compose.yml \
-                            "$SSH_USER@$EC2_HOST:~/microservices/docker-compose.yml"
-
-                        echo "Copying Nginx configuration..."
-
-                        scp -i "$SSH_KEY" \
-                            -o StrictHostKeyChecking=no \
-                            docker/nginx/default.conf \
-                            "$SSH_USER@$EC2_HOST:~/microservices/docker/nginx/default.conf"
-
-                        echo "Deploying application on EC2..."
-
-                        ssh -i "$SSH_KEY" \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_HOST" \
-                            "AWS_ACCOUNT_ID='$AWS_ACCOUNT_ID' \
-                             AWS_REGION='$AWS_REGION' \
-                             IMAGE_TAG='$IMAGE_TAG' \
-                             ECR_REGISTRY='$ECR_REGISTRY' \
-                             bash -s" <<'REMOTE'
-
-set -e
-
-cd ~/microservices
-
-echo "Creating environment file..."
-
-printf 'AWS_ACCOUNT_ID=%s\\nAWS_REGION=%s\\nIMAGE_TAG=%s\\n' \
-    "$AWS_ACCOUNT_ID" \
-    "$AWS_REGION" \
-    "$IMAGE_TAG" > .env
-
-echo "Checking AWS identity..."
-
-aws sts get-caller-identity
-
-echo "Logging into Amazon ECR..."
-
-aws ecr get-login-password \
-    --region "$AWS_REGION" |
-docker login \
-    --username AWS \
-    --password-stdin "$ECR_REGISTRY"
-
-echo "Pulling Docker images..."
-
-docker compose pull
-
-echo "Starting application containers..."
-
-docker compose up -d --remove-orphans
-
-echo "Checking running containers..."
-
-docker compose ps
-
-echo "Deployment completed successfully!"
-
-REMOTE
-                    '''
-                }
-            }
+                echo "Deployment directory created successfully!"
+            '''
         }
+    }
+}
 
         // ================= DEPLOYMENT VERIFICATION =================
 
