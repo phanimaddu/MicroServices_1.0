@@ -1,79 +1,23 @@
+
 services:
 
   user-service:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/user-service:${IMAGE_TAG}
-    build:
-      context: .
-      dockerfile: Dockerfile.user
+    image: ${ECR_REGISTRY}/user-service:${IMAGE_TAG}
     container_name: user-service
+    ports:
+      - "8081:8081"
     restart: always
-    expose:
-      - "3001"
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://localhost:3001/users').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-      interval: 15s
-      timeout: 5s
-      retries: 3
 
   product-service:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/product-service:${IMAGE_TAG}
-    build:
-      context: .
-      dockerfile: Dockerfile.product
+    image: ${ECR_REGISTRY}/product-service:${IMAGE_TAG}
     container_name: product-service
+    ports:
+      - "3002:3002"
     restart: always
-    expose:
-      - "3002"
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://localhost:3002/products').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-      interval: 15s
-      timeout: 5s
-      retries: 3
 
   order-service:
-    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/order-service:${IMAGE_TAG}
-    build:
-      context: .
-      dockerfile: Dockerfile.order
+    image: ${ECR_REGISTRY}/order-service:${IMAGE_TAG}
     container_name: order-service
-    restart: always
-    environment:
-      USER_SERVICE_URL: http://user-service:3001
-      PRODUCT_SERVICE_URL: http://product-service:3002
-    expose:
-      - "3003"
-    depends_on:
-      user-service:
-        condition: service_healthy
-      product-service:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://localhost:3003/orders').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-      interval: 15s
-      timeout: 5s
-      retries: 3
-
-  nginx:
-    image: nginx:alpine
-    container_name: microservices-nginx
-    restart: unless-stopped
     ports:
-      - "8081:80"
-    volumes:
-      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - user-service
-      - product-service
-      - order-service
+      - "3003:3003"
+    restart: always
