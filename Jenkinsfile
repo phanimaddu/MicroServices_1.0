@@ -25,7 +25,7 @@ pipeline {
         AWS_REGION = 'us-east-1'
         AWS_ACCOUNT_ID = '658606186375'
 
-        EC2_HOST = '172.31.5.188'
+        EC2_HOST = '172.31.9.91'
 
         ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
